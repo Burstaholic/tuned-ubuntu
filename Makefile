@@ -1,169 +1,106 @@
 NAME = tuned
-# set to devel for nightly GIT snapshot
-BUILD = release
-# which config to use in mock-build target
-MOCK_CONFIG = rhel-7-x86_64
-# scratch-build for triggering Jenkins
-SCRATCH_BUILD_TARGET = rhel-7.2-candidate
 VERSION = $(shell awk '/^Version:/ {print $$2}' tuned.spec)
-GIT_DATE = $(shell date +'%Y%m%d')
-ifeq ($(BUILD), release)
-	RPM_ARGS += --without snapshot
-	MOCK_ARGS += --without=snapshot
-	RPM_VERSION = $(NAME)-$(VERSION)-1
-else
-	RPM_ARGS += --with snapshot
-	MOCK_ARGS += --with=snapshot
-	GIT_SHORT_COMMIT = $(shell git rev-parse --short=8 --verify HEAD)
-	GIT_SUFFIX = $(GIT_DATE)git$(GIT_SHORT_COMMIT)
-	GIT_PSUFFIX = .$(GIT_SUFFIX)
-	RPM_VERSION = $(NAME)-$(VERSION)-1$(GIT_PSUFFIX)
-endif
-UNITDIR = $(shell rpm --eval '%{_unitdir}' 2>/dev/null || echo /usr/lib/systemd/system)
-TMPFILESDIR = $(shell rpm --eval '%{_tmpfilesdir}' 2>/dev/null || echo /usr/lib/tmpfiles.d)
-VERSIONED_NAME = $(NAME)-$(VERSION)$(GIT_PSUFFIX)
+RELEASE = $(shell awk '/^Release:/ {print $$2}' tuned.spec)
+UNITDIR = $(shell rpm --eval '%{_unitdir}')
+VERSIONED_NAME = $(NAME)-$(VERSION)
 
-DATADIR = /usr/share
-DOCDIR = $(DATADIR)/doc/$(NAME)
-PYTHON_SITELIB = $(shell python -c 'from distutils.sysconfig import get_python_lib; print get_python_lib();' || echo /usr/lib/python2.7/site-packages)
+DESTDIR = /
+PYTHON_SITELIB = /usr/lib/python2.7/dist-packages
 TUNED_PROFILESDIR = /usr/lib/tuned
-BASH_COMPLETIONS = $(DATADIR)/bash-completion/completions
 
-release-dir:
+archive: clean
 	mkdir -p $(VERSIONED_NAME)
 
-release-cp: release-dir
-	cp -a AUTHORS COPYING INSTALL README $(VERSIONED_NAME)
+	cp AUTHORS COPYING INSTALL README $(VERSIONED_NAME)
 
-	cp -a tuned.py tuned.spec tuned.service tuned.tmpfiles Makefile tuned-adm.py \
-		tuned-adm.bash dbus.conf recommend.conf tuned-main.conf 00_tuned \
-		bootcmdline org.tuned.gui.policy tuned-gui.py tuned-gui.glade \
-		tuned-gui.desktop $(VERSIONED_NAME)
-	cp -a doc experiments libexec man profiles systemtap tuned contrib icons \
-		$(VERSIONED_NAME)
+	cp tuned.py tuned.spec tuned.service tuned.tmpfiles Makefile tuned-adm.py \
+		tuned.bash dbus.conf recommend.conf $(VERSIONED_NAME)
+	cp -a doc experiments man profiles systemtap tuned $(VERSIONED_NAME)
 
-archive: clean release-cp
 	tar cjf $(VERSIONED_NAME).tar.bz2 $(VERSIONED_NAME)
 
-rpm-build-dir:
+srpm: archive
 	mkdir rpm-build-dir
-
-srpm: archive rpm-build-dir
 	rpmbuild --define "_sourcedir `pwd`/rpm-build-dir" --define "_srcrpmdir `pwd`/rpm-build-dir" \
-		--define "_specdir `pwd`/rpm-build-dir" --nodeps $(RPM_ARGS) -ts $(VERSIONED_NAME).tar.bz2
+		--define "_specdir `pwd`/rpm-build-dir" --nodeps -ts $(VERSIONED_NAME).tar.bz2
 
-rpm: archive rpm-build-dir
-	rpmbuild --define "_sourcedir `pwd`/rpm-build-dir" --define "_srcrpmdir `pwd`/rpm-build-dir" \
-		--define "_specdir `pwd`/rpm-build-dir" --nodeps $(RPM_ARGS) -tb $(VERSIONED_NAME).tar.bz2
+build:
+	# nothing to build
 
-clean-mock-result-dir:
-	rm -f mock-result-dir/*
+install:
+	@echo "prerequisites: python-decorator python-dbus python-gobject python-pyudev"
+	@echo "press Enter to continue"
+	@read "DISGARD__"
 
-mock-result-dir:
-	mkdir mock-result-dir
+	mkdir -p $(DESTDIR)
 
-# delete RPM files older than cca. one week if total space occupied is more than 5 MB
-tidy-mock-result-dir: mock-result-dir
-	if [ `du -bs mock-result-dir | tail -n 1 | cut -f1` -gt 5000000 ]; then \
-		rm -f `find mock-result-dir -name '*.rpm' -mtime +7`; \
-	fi
-
-mock-build: srpm
-	mock -r $(MOCK_CONFIG) $(MOCK_ARGS) --resultdir=`pwd`/mock-result-dir `ls rpm-build-dir/*$(RPM_VERSION).*.src.rpm | head -n 1`&& \
-	rm -f mock-result-dir/*.log
-
-mock-devel-build: srpm
-	mock -r $(MOCK_CONFIG) --with=snapshot \
-		--define "git_short_commit `if [ -n \"$(GIT_SHORT_COMMIT)\" ]; then echo $(GIT_SHORT_COMMIT); else git rev-parse --short=8 --verify HEAD; fi`" \
-		--resultdir=`pwd`/mock-result-dir `ls rpm-build-dir/*$(RPM_VERSION).*.src.rpm | head -n 1` && \
-	rm -f mock-result-dir/*.log
-
-createrepo: mock-devel-build
-	createrepo mock-result-dir
-
-# scratch build to triggering Jenkins
-scratch-build: mock-devel-build
-	brew build --scratch --nowait rhel-7.2-candidate `ls mock-result-dir/*$(GIT_DATE)git*.*.src.rpm | head -n 1`
-
-nightly: tidy-mock-result-dir createrepo scratch-build
-	rsync -ave ssh --delete --progress mock-result-dir/* jskarvad@fedorapeople.org:/home/fedora/jskarvad/public_html/tuned/devel/repo/
-
-install-dirs:
-	mkdir -p $(DESTDIR)$(PYTHON_SITELIB)
-	mkdir -p $(DESTDIR)$(TUNED_PROFILESDIR)
-	mkdir -p $(DESTDIR)/var/log/tuned
-	mkdir -p $(DESTDIR)/run/tuned
-	mkdir -p $(DESTDIR)$(DOCDIR)
-
-install: install-dirs
 	# library
+	mkdir -p $(DESTDIR)$(PYTHON_SITELIB)
 	cp -a tuned $(DESTDIR)$(PYTHON_SITELIB)
 
 	# binaries
-	install -Dpm 0755 tuned.py $(DESTDIR)/usr/sbin/tuned
-	install -Dpm 0755 tuned-adm.py $(DESTDIR)/usr/sbin/tuned-adm
-	install -Dpm 0755 tuned-gui.py $(DESTDIR)/usr/sbin/tuned-gui
-	$(foreach file, $(wildcard systemtap/*), \
-		install -Dpm 0755 $(file) $(DESTDIR)/usr/sbin/$(notdir $(file));)
-
-	# glade
-	install -Dpm 0755 tuned-gui.glade $(DESTDIR)$(DATADIR)/tuned/ui/tuned-gui.glade
+	mkdir -p $(DESTDIR)/usr/sbin
+	install -m 0755 tuned.py $(DESTDIR)/usr/sbin/tuned
+	install -m 0755 tuned-adm.py $(DESTDIR)/usr/sbin/tuned-adm
+	for file in systemtap/*; do \
+		install -m 0755 $$file $(DESTDIR)/usr/sbin/; \
+	done
 
 	# tools
-	install -Dpm 0755 experiments/powertop2tuned.py $(DESTDIR)/usr/bin/powertop2tuned
+	mkdir -p $(DESTDIR)/usr/bin
+	install -m 0755 experiments/powertop2tuned.py $(DESTDIR)/usr/bin/powertop2tuned
 
 	# configuration files
-	install -Dpm 0644 tuned-main.conf $(DESTDIR)/etc/tuned/tuned-main.conf
+	mkdir -p $(DESTDIR)/etc/tuned
 	# None profile in the moment, autodetection will be used
 	echo -n > $(DESTDIR)/etc/tuned/active_profile
-	install -Dpm 0644 bootcmdline $(DESTDIR)/etc/tuned/bootcmdline
 
 	# profiles & system config
+	mkdir -p $(DESTDIR)$(TUNED_PROFILESDIR)
 	cp -a profiles/* $(DESTDIR)$(TUNED_PROFILESDIR)/
-	mv $(DESTDIR)$(TUNED_PROFILESDIR)/realtime/realtime-variables.conf \
-		$(DESTDIR)/etc/tuned/realtime-variables.conf
-	mv $(DESTDIR)$(TUNED_PROFILESDIR)/realtime-virtual-guest/realtime-virtual-guest-variables.conf \
-		$(DESTDIR)/etc/tuned/realtime-virtual-guest-variables.conf
-	mv $(DESTDIR)$(TUNED_PROFILESDIR)/realtime-virtual-host/realtime-virtual-host-variables.conf \
-		$(DESTDIR)/etc/tuned/realtime-virtual-host-variables.conf
-	install -pm 0644 recommend.conf $(DESTDIR)$(TUNED_PROFILESDIR)/recommend.conf
+	install -m 0644 recommend.conf $(DESTDIR)$(TUNED_PROFILESDIR)/recommend.conf
 
-	# bash completion
-	install -Dpm 0644 tuned-adm.bash $(DESTDIR)$(BASH_COMPLETIONS)/tuned-adm
+	# Install bash completion
+	mkdir -p $(DESTDIR)/etc/bash_completion.d
+	install -m 0644 tuned.bash $(DESTDIR)/etc/bash_completion.d/tuned.bash
+
+	# log dir
+	mkdir -p $(DESTDIR)/var/log/tuned
 
 	# runtime directory
-	install -Dpm 0644 tuned.tmpfiles $(DESTDIR)$(TMPFILESDIR)/tuned.conf
+	mkdir -p $(DESTDIR)/run/tuned
+	mkdir -p $(DESTDIR)/etc/tmpfiles.d
+	install -m 0644 tuned.tmpfiles $(DESTDIR)/etc/tmpfiles.d/tuned.conf
 
 	# systemd units
-	install -Dpm 0644 tuned.service $(DESTDIR)$(UNITDIR)/tuned.service
+	# mkdir -p $(DESTDIR)$(UNITDIR)
+	# install -m 0644 tuned.service $(DESTDIR)$(UNITDIR)/tuned.service
+
+	# initctl job
+	install -m 644 tuned.upstart.conf $(DESTDIR)/etc/init/tuned.conf
+	ln -s -f /lib/init/upstart-job /etc/init.d/tuned
 
 	# dbus configuration
-	install -Dpm 0644 dbus.conf $(DESTDIR)/etc/dbus-1/system.d/com.redhat.tuned.conf
+	mkdir -p $(DESTDIR)/etc/dbus-1/system.d
+	install -m 0644 dbus.conf $(DESTDIR)/etc/dbus-1/system.d/com.redhat.tuned.conf
+	initctl restart dbus
 
-	# grub template
-	install -Dpm 0755 00_tuned $(DESTDIR)/etc/grub.d/00_tuned
+	# manual pages *.8
+	mkdir -p $(DESTDIR)/usr/share/man/man8
+	for file in man/*.8; do \
+		install -m 0644 $$file $(DESTDIR)/usr/share/man/man8; \
+	done
 
-	# polkit configuration
-	install -Dpm 0644 org.tuned.gui.policy $(DESTDIR)$(DATADIR)/polkit-1/actions/org.tuned.gui.policy
-
-	# manual pages
-	$(foreach man_section, 5 7 8, $(foreach file, $(wildcard man/*.$(man_section)), \
-		install -Dpm 0644 $(file) $(DESTDIR)$(DATADIR)/man/man$(man_section)/$(notdir $(file));))
+	# manual pages *.5
+	mkdir -p $(DESTDIR)/usr/share/man/man5
+	for file in man/*.5; do \
+		install -m 0644 $$file $(DESTDIR)/usr/share/man/man5; \
+	done
 
 	# documentation
-	cp -a doc/* $(DESTDIR)$(DOCDIR)
-	cp AUTHORS COPYING README $(DESTDIR)$(DOCDIR)
-
-	# libexec scripts
-	$(foreach file, $(wildcard libexec/*), \
-		install -Dpm 0755 $(file) $(DESTDIR)/usr/libexec/tuned/$(notdir $(file));)
-
-	# icon
-	install -Dpm 0644 icons/tuned.svg $(DESTDIR)$(DATADIR)/icons/hicolor/scalable/apps/tuned.svg
-
-	# desktop file
-	install -dD $(DESTDIR)$(DATADIR)/applications
-	desktop-file-install --dir=$(DESTDIR)$(DATADIR)/applications tuned-gui.desktop
+	mkdir -p $(DESTDIR)/usr/share/doc/$(VERSIONED_NAME)
+	cp -a doc/* $(DESTDIR)/usr/share/doc/$(VERSIONED_NAME)
+	cp AUTHORS COPYING README $(DESTDIR)/usr/share/doc/$(VERSIONED_NAME)
 
 clean:
 	find -name "*.pyc" | xargs rm -f
@@ -173,3 +110,4 @@ test:
 	python -m unittest discover tests
 
 .PHONY: clean archive srpm tag test
+
